@@ -1,0 +1,37 @@
+# --- Virtual environments ---
+jupyter-env/
+venv/
+.venv/
+env/
+mlruns/
+# --- Jupyter ---
+.ipynb_checkpoints/
+
+# --- Python bytecode/caches ---
+__pycache__/
+*.py[cod]
+*$py.class
+
+# --- Packaging / build artifacts ---
+*.egg-info/
+dist/
+build/
+
+# --- Environment / secrets ---
+*.env
+.env.*
+
+# --- OS / editor cruft ---
+.DS_Store
+.vscode/
+.idea/
+
+# --- Data ---
+data/
+raw_dataset/
+trainable_data/
+*.csv
+*.parquet
+*.db
+
+
