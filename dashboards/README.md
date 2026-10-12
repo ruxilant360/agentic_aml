@@ -13,43 +13,13 @@ counts and dollar amounts.
 ## Screenshot
 
 <!--
-  Put your screenshot at dashboards/screenshots/dashboard.png and it will
-  appear right here automatically — the path below is already wired up, you
-  do not need to edit this file. See "How to add the screenshot" below for
-  exact steps.
+  Same file as the root README points at (dashboards/screenshots/dashboard.png)
+  — save your screenshot once and it shows up in both places.
 -->
 ![Dashboard screenshot](screenshots/dashboard.png)
 
-*(Replace the placeholder above by saving your screenshot to
-`dashboards/screenshots/dashboard.png` — see the next section.)*
-
-### How to add the screenshot
-
-1. **Run the dashboard** (see [Running it](#running-it) below) and open it in
-   your browser at `http://localhost:8501`.
-2. **Take a screenshot:**
-   - **Windows:** press `Win + Shift + S`, drag a box around the browser
-     window, then paste (`Ctrl + V`) into Paint (or any image editor) and
-     save it.
-   - **Mac:** press `Cmd + Shift + 4`, drag a box around the window — it
-     saves straight to your Desktop as a `.png`.
-3. **Save (or move) the file as exactly this path, relative to the repo
-   root:**
-   ```
-   dashboards/screenshots/dashboard.png
-   ```
-   The `screenshots` folder already exists — just drop the file in. If you'd
-   rather use a different filename (e.g. `overview.png`), that's fine too,
-   just update the path inside the `![...](...)` line above to match.
-4. **Done.** Nothing else to edit — most Markdown viewers (VS Code's preview,
-   GitHub, GitLab) will pick up the local image automatically. If you're
-   viewing this file in plain text you won't see the image, only the path —
-   that's expected.
-
-> **Note:** you can't paste an image directly *into* a Markdown file the way
-> you would into a chat or a Word doc — Markdown only *links* to image files
-> sitting on disk (or a URL). Saving the PNG into `screenshots/` and letting
-> the `![...]` tag above point at it is the standard way to do this.
+*(Placeholder until you add one — see [the root README](../README.md#screenshot)
+for exact steps on taking and saving it.)*
 
 ---
 
