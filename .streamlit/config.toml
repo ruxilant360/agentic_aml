@@ -1,0 +1,23 @@
+# App chrome for the AML dashboard, matched to the chart surface in
+# dashboards/theme.py so the page and the plots sit on the same ground.
+#
+# To run the app dark: set base = "dark" here, swap the four colours below
+# for the dark column, and pick "Dark" in the sidebar's Chart palette.
+# Each mode has its own validated palette steps -- it is not an auto-flip.
+#   dark:  backgroundColor = "#1a1a19"  secondaryBackgroundColor = "#0d0d0d"
+#          textColor = "#ffffff"        primaryColor = "#3987e5"
+
+[theme]
+base = "light"
+primaryColor = "#2a78d6"
+backgroundColor = "#fcfcfb"
+secondaryBackgroundColor = "#f9f9f7"
+textColor = "#0b0b0b"
+font = "sans serif"
+
+[server]
+# The CSV source reads a capped head of a ~5M-row file; raise if you lift the cap.
+maxUploadSize = 500
+
+[browser]
+gatherUsageStats = false

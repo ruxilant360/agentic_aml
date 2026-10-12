@@ -1,0 +1,516 @@
+// =====================================================================
+//  AML dashboard — DAX measures
+// =====================================================================
+//
+//  Paste each measure into Power BI Desktop one at a time:
+//      Report view → Modeling → New measure → paste → Enter
+//  (DAX has no multi-measure file format, so this is a copy-paste
+//  library, not something Power BI imports wholesale.)
+//
+//  PREREQUISITES
+//  -------------
+//  1. Run `01_views.sql` against the AML database first.
+//  2. Import these views (Get Data → PostgreSQL):
+//         vw_aml_transactions        vw_aml_threshold_sweep
+//         vw_aml_model_outputs       vw_aml_model_metrics
+//         vw_aml_shap_long           vw_aml_lift_deciles
+//         vw_aml_daily_metrics       vw_aml_feature_distribution
+//         vw_aml_channel_metrics     vw_aml_feature_psi
+//         vw_aml_pattern_metrics     vw_aml_dest_fan_in
+//
+//  3. Relationships (Model view). Only two are needed; the aggregate views
+//     are standalone and must NOT be related to anything, or their
+//     pre-computed rates will be re-filtered and read wrong:
+//         vw_aml_transactions[transaction_id] 1 → * vw_aml_model_outputs[transaction_id]
+//         vw_aml_model_outputs[transaction_id] 1 → * vw_aml_shap_long[transaction_id]
+//
+//  4. Create the recall-floor What-If parameter:
+//         Modeling → New parameter → Numeric range
+//         Name "Recall Floor", Min 0.05, Max 0.95, Increment 0.05, Default 0.5
+//     Power BI generates a table `Recall Floor`, a column [Recall Floor],
+//     and a measure [Recall Floor Value] — the measures below read that one.
+//
+//  POLICY
+//  ------
+//  Threshold selection maximises precision subject to a recall floor. It is
+//  deliberately NOT F1-balanced: a missed case costs less than an analyst
+//  queue full of false positives. The F1 measures at the bottom exist only
+//  to show what the policy gives up, and must never drive the chosen cut.
+//
+//  LANGUAGE
+//  --------
+//  These measures report scores, flags and SHAP attributions. A flag is a
+//  routing signal and SHAP is the evidence behind it — no measure here
+//  labels a transaction, and visual titles built on them shouldn't either.
+// =====================================================================
+
+
+// ---------------------------------------------------------------------
+//  1. Book volume and value
+// ---------------------------------------------------------------------
+
+Transactions = COUNTROWS ( vw_aml_transactions )
+
+Total Value = SUM ( vw_aml_transactions[amount] )
+
+Average Amount = AVERAGE ( vw_aml_transactions[amount] )
+
+Median Amount = MEDIAN ( vw_aml_transactions[amount] )
+
+Distinct Originators = DISTINCTCOUNT ( vw_aml_transactions[name_orig] )
+
+Distinct Destinations = DISTINCTCOUNT ( vw_aml_transactions[name_dest] )
+
+
+// ---------------------------------------------------------------------
+//  2. Ground truth and the pre-existing rule flag
+// ---------------------------------------------------------------------
+//  `is_fraud` is nullable — live rows have no label at write time — so
+//  every rate below divides by the LABELLED count, never by all rows.
+//  Dividing by all rows would silently understate the base rate as
+//  unlabelled volume grows.
+// ---------------------------------------------------------------------
+
+Labelled Rows =
+CALCULATE (
+    COUNTROWS ( vw_aml_transactions ),
+    vw_aml_transactions[is_labelled] = TRUE ()
+)
+
+Positive Labels =
+CALCULATE (
+    COUNTROWS ( vw_aml_transactions ),
+    vw_aml_transactions[label_positive] = TRUE ()
+)
+
+Positive Label Rate = DIVIDE ( [Positive Labels], [Labelled Rows] )
+
+Rule Flags =
+CALCULATE (
+    COUNTROWS ( vw_aml_transactions ),
+    vw_aml_transactions[rule_flagged] = TRUE ()
+)
+
+Rule Flag Rate = DIVIDE ( [Rule Flags], [Transactions] )
+
+
+// ---------------------------------------------------------------------
+//  3. Model output
+// ---------------------------------------------------------------------
+
+Scored Transactions = COUNTROWS ( vw_aml_model_outputs )
+
+Average Score = AVERAGE ( vw_aml_model_outputs[score] )
+
+Max Score = MAX ( vw_aml_model_outputs[score] )
+
+Model Flags =
+CALCULATE (
+    COUNTROWS ( vw_aml_model_outputs ),
+    vw_aml_model_outputs[model_flagged] = TRUE ()
+)
+
+Model Flag Rate = DIVIDE ( [Model Flags], [Scored Transactions] )
+
+Scoring Coverage = DIVIDE ( [Scored Transactions], [Transactions] )
+
+
+// ---------------------------------------------------------------------
+//  4. Headline model quality — macro-PR
+// ---------------------------------------------------------------------
+//  Macro-averaged PR-AUC is this project's metric of record. Not accuracy
+//  (a model that flags nothing scores 99.9%) and not plain ROC-AUC (it
+//  looks excellent on a book this imbalanced). Computed in SQL; these
+//  measures just surface the single row.
+// ---------------------------------------------------------------------
+
+Macro-PR AUC = MAX ( vw_aml_model_metrics[macro_pr_auc] )
+
+PR-AUC Positive Class = MAX ( vw_aml_model_metrics[pr_auc_positive] )
+
+PR-AUC Negative Class = MAX ( vw_aml_model_metrics[pr_auc_negative] )
+
+Base Rate = MAX ( vw_aml_model_metrics[base_rate] )
+
+// How much better than guessing the positive-class curve is. A PR-AUC of
+// 0.30 is weak in the abstract but 200x the base rate on a 0.15% book.
+Lift Over Base Rate = DIVIDE ( [PR-AUC Positive Class], [Base Rate] )
+
+
+// ---------------------------------------------------------------------
+//  5. The precision-priority threshold policy
+// ---------------------------------------------------------------------
+
+Selected Recall Floor =
+IF ( ISBLANK ( [Recall Floor Value] ), 0.5, [Recall Floor Value] )
+
+// Highest precision reachable without dropping below the floor.
+Eligible Max Precision =
+VAR RecallFloor = [Selected Recall Floor]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[precision] ),
+        FILTER (
+            ALL ( vw_aml_threshold_sweep ),
+            vw_aml_threshold_sweep[recall] >= RecallFloor
+        )
+    )
+
+// The cut the policy chooses. Where several cuts tie on precision, the
+// highest one wins — it queues the fewest cases for the same precision,
+// which matches how the Python implementation in dashboards/metrics.py
+// breaks the same tie.
+Policy Threshold =
+VAR RecallFloor = [Selected Recall Floor]
+VAR BestPrecision = [Eligible Max Precision]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[threshold] ),
+        FILTER (
+            ALL ( vw_aml_threshold_sweep ),
+            vw_aml_threshold_sweep[recall] >= RecallFloor
+                && vw_aml_threshold_sweep[precision] = BestPrecision
+        )
+    )
+
+Recall Floor Reachable =
+VAR RecallFloor = [Selected Recall Floor]
+VAR MaxRecall =
+    CALCULATE ( MAX ( vw_aml_threshold_sweep[recall] ), ALL ( vw_aml_threshold_sweep ) )
+RETURN
+    IF (
+        MaxRecall >= RecallFloor,
+        "Floor reachable",
+        "No cut reaches recall " & FORMAT ( RecallFloor, "0%" )
+            & " — max achievable is " & FORMAT ( MaxRecall, "0.0%" )
+    )
+
+
+// ---------------------------------------------------------------------
+//  6. Performance at the policy cut
+// ---------------------------------------------------------------------
+//  All of these read the sweep row at [Policy Threshold]. The threshold
+//  comes back from MAX() of the stored column, so the equality test hits
+//  the exact double that produced it.
+// ---------------------------------------------------------------------
+
+Policy Precision =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[precision] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy Recall =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[recall] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy Cases Queued =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[n_alerts] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy Share of Book Queued =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[alert_rate] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy True Positives =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[tp] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy False Positives =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[fp] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy False Negatives =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[fn] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy True Negatives =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[tn] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy False Positive Rate =
+VAR Cut = [Policy Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[false_positive_rate] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+// One-line card for a report header.
+Policy Summary =
+"Cut " & FORMAT ( [Policy Threshold], "0.00" )
+    & " · precision " & FORMAT ( [Policy Precision], "0.0%" )
+    & " · recall " & FORMAT ( [Policy Recall], "0.0%" )
+    & " · " & FORMAT ( [Policy Cases Queued], "#,0" ) & " cases queued"
+
+
+// ---------------------------------------------------------------------
+//  7. What the policy gives up — the F1 contrast
+// ---------------------------------------------------------------------
+//  Shown so the trade-off is explicit on the page. Never wire these into
+//  the chosen cut.
+// ---------------------------------------------------------------------
+
+Best F1 =
+CALCULATE ( MAX ( vw_aml_threshold_sweep[f1] ), ALL ( vw_aml_threshold_sweep ) )
+
+Best F1 Threshold =
+VAR BestF1 = [Best F1]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[threshold] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[f1] = BestF1 )
+    )
+
+Precision at Best F1 =
+VAR Cut = [Best F1 Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[precision] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Cases Queued at Best F1 =
+VAR Cut = [Best F1 Threshold]
+RETURN
+    CALCULATE (
+        MAX ( vw_aml_threshold_sweep[n_alerts] ),
+        FILTER ( ALL ( vw_aml_threshold_sweep ), vw_aml_threshold_sweep[threshold] = Cut )
+    )
+
+Policy Trade-off =
+"F1-balanced cut would be " & FORMAT ( [Best F1 Threshold], "0.00" )
+    & " at precision " & FORMAT ( [Precision at Best F1], "0.0%" )
+    & " and " & FORMAT ( [Cases Queued at Best F1], "#,0" )
+    & " cases queued. Shown as the cost of the precision-priority policy, "
+    & "not as the recommendation."
+
+
+// ---------------------------------------------------------------------
+//  8. Sweep browsing (for the threshold slicer, not the policy)
+// ---------------------------------------------------------------------
+//  Put vw_aml_threshold_sweep[threshold] on a slicer and these report the
+//  hand-picked cut. They default to the policy cut when nothing is picked.
+// ---------------------------------------------------------------------
+
+Selected Cut =
+SELECTEDVALUE ( vw_aml_threshold_sweep[threshold], [Policy Threshold] )
+
+Precision at Cut = MAX ( vw_aml_threshold_sweep[precision] )
+
+Recall at Cut = MAX ( vw_aml_threshold_sweep[recall] )
+
+Cases Queued at Cut = MAX ( vw_aml_threshold_sweep[n_alerts] )
+
+Share of Book Queued at Cut = MAX ( vw_aml_threshold_sweep[alert_rate] )
+
+
+// ---------------------------------------------------------------------
+//  9. Capacity / decile lift
+// ---------------------------------------------------------------------
+
+Decile Hit Rate = MAX ( vw_aml_lift_deciles[hit_rate] )
+
+Decile Lift = MAX ( vw_aml_lift_deciles[lift] )
+
+Cumulative Hit Rate = MAX ( vw_aml_lift_deciles[cumulative_hit_rate] )
+
+Top Decile Lift =
+CALCULATE (
+    MAX ( vw_aml_lift_deciles[lift] ),
+    FILTER ( ALL ( vw_aml_lift_deciles ), vw_aml_lift_deciles[decile] = 1 )
+)
+
+
+// ---------------------------------------------------------------------
+//  10. SHAP — the explanation layer
+// ---------------------------------------------------------------------
+//  Mean |SHAP| ranks how much a feature moves the score. Mean signed SHAP
+//  shows which way it pushes. Use the first to order a bar chart, the
+//  second to colour it on a diverging scale around zero.
+// ---------------------------------------------------------------------
+
+Mean Abs SHAP = AVERAGE ( vw_aml_shap_long[abs_shap_value] )
+
+Mean SHAP = AVERAGE ( vw_aml_shap_long[shap_value] )
+
+SHAP Rows = COUNTROWS ( vw_aml_shap_long )
+
+// Use on a card beside a case: which single feature moved this score most.
+Top Driver =
+VAR Ranked =
+    TOPN (
+        1,
+        SUMMARIZE (
+            vw_aml_shap_long,
+            vw_aml_shap_long[feature],
+            "@AbsShap", AVERAGE ( vw_aml_shap_long[abs_shap_value] )
+        ),
+        [@AbsShap], DESC
+    )
+RETURN
+    CONCATENATEX ( Ranked, vw_aml_shap_long[feature], ", " )
+
+// Direction of that driver, in words, so the colour never carries it alone.
+Top Driver Direction =
+VAR TopFeature = [Top Driver]
+VAR SignedShap =
+    CALCULATE (
+        AVERAGE ( vw_aml_shap_long[shap_value] ),
+        FILTER ( vw_aml_shap_long, vw_aml_shap_long[feature] = TopFeature )
+    )
+RETURN
+    IF ( SignedShap >= 0, "raises the score", "lowers the score" )
+
+
+// ---------------------------------------------------------------------
+//  11. Behavioural patterns
+// ---------------------------------------------------------------------
+//  Descriptive account behaviour, read next to the score. A pattern with
+//  wide coverage and a near-zero hit rate is noise, not signal — which is
+//  why coverage and hit rate always appear together.
+// ---------------------------------------------------------------------
+
+Pattern Rows = SUM ( vw_aml_pattern_metrics[n_tx] )
+
+Pattern Coverage = MAX ( vw_aml_pattern_metrics[share_of_book] )
+
+Pattern Hit Rate = MAX ( vw_aml_pattern_metrics[hit_rate] )
+
+Pattern Hit Rate vs Base =
+DIVIDE ( [Pattern Hit Rate], [Base Rate] )
+
+
+// ---------------------------------------------------------------------
+//  12. Model health — covariate shift
+// ---------------------------------------------------------------------
+//  A model-health signal, separate from any transaction-level flag: it
+//  says the inputs moved, not that a transaction is wrong.
+//
+//  PSI bands: < 0.10 stable · 0.10–0.25 moderate · > 0.25 significant.
+//  `Drift Status` ships the band as a word so a status colour never
+//  carries the meaning on its own.
+// ---------------------------------------------------------------------
+
+Feature PSI = MAX ( vw_aml_feature_psi[psi] )
+
+Worst Feature PSI =
+CALCULATE ( MAX ( vw_aml_feature_psi[psi] ), ALL ( vw_aml_feature_psi ) )
+
+Most Shifted Feature =
+VAR Worst = [Worst Feature PSI]
+RETURN
+    CALCULATE (
+        MIN ( vw_aml_feature_psi[feature] ),
+        FILTER ( ALL ( vw_aml_feature_psi ), vw_aml_feature_psi[psi] = Worst )
+    )
+
+Features Shifted =
+CALCULATE (
+    COUNTROWS ( vw_aml_feature_psi ),
+    FILTER ( ALL ( vw_aml_feature_psi ), vw_aml_feature_psi[psi] >= 0.1 )
+)
+
+Drift Status =
+VAR Worst = [Worst Feature PSI]
+RETURN
+    SWITCH (
+        TRUE (),
+        ISBLANK ( Worst ), "No reading",
+        Worst < 0.1,  "✔ Inputs stable (PSI " & FORMAT ( Worst, "0.000" ) & ")",
+        Worst < 0.25, "⚠ Moderate shift in " & [Most Shifted Feature]
+                        & " (PSI " & FORMAT ( Worst, "0.000" ) & ")",
+        "❗ Significant shift in " & [Most Shifted Feature]
+            & " (PSI " & FORMAT ( Worst, "0.000" ) & ")"
+    )
+
+// For a conditional-format rule on the PSI bar: returns the status hex
+// straight from the dashboard palette. Always pair it with the band word.
+Drift Colour =
+VAR P = [Feature PSI]
+RETURN
+    SWITCH (
+        TRUE (),
+        P < 0.1,  "#0CA30C",   // good
+        P < 0.25, "#FAB219",   // warning
+        "#D03B3B"              // critical
+    )
+
+
+// ---------------------------------------------------------------------
+//  13. Daily trend
+// ---------------------------------------------------------------------
+//  `step` is hours since the start of the simulation, not a real date, so
+//  there is no date table and no time intelligence. `sim_day` is a plain
+//  numeric axis — don't mark it as a date table, or DAX date functions
+//  will silently return nonsense.
+// ---------------------------------------------------------------------
+
+Daily Transactions = SUM ( vw_aml_daily_metrics[n_tx] )
+
+Daily Value = SUM ( vw_aml_daily_metrics[total_amount] )
+
+Daily Positive Labels = SUM ( vw_aml_daily_metrics[n_positive] )
+
+Daily Positive Label Rate =
+DIVIDE ( SUM ( vw_aml_daily_metrics[n_positive] ),
+         SUM ( vw_aml_daily_metrics[n_labelled] ) )
+
+Daily Model Flags = SUM ( vw_aml_daily_metrics[n_model_flagged] )
+
+Daily Model Flag Rate =
+DIVIDE ( SUM ( vw_aml_daily_metrics[n_model_flagged] ),
+         SUM ( vw_aml_daily_metrics[n_scored] ) )
+
+Daily Mean Score = AVERAGE ( vw_aml_daily_metrics[avg_score] )
+
+Daily P95 Score = AVERAGE ( vw_aml_daily_metrics[p95_score] )
+
+
+// ---------------------------------------------------------------------
+//  14. Channel
+// ---------------------------------------------------------------------
+
+Channel Transactions = SUM ( vw_aml_channel_metrics[n_tx] )
+
+Channel Value = SUM ( vw_aml_channel_metrics[total_amount] )
+
+Channel Positive Label Rate =
+DIVIDE ( SUM ( vw_aml_channel_metrics[n_positive] ),
+         SUM ( vw_aml_channel_metrics[n_labelled] ) )
+
+Channel Share of Volume =
+DIVIDE (
+    SUM ( vw_aml_channel_metrics[n_tx] ),
+    CALCULATE ( SUM ( vw_aml_channel_metrics[n_tx] ), ALL ( vw_aml_channel_metrics ) )
+)

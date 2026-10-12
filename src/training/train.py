@@ -4,11 +4,11 @@ configuration (the search space, iteration count, CV folds, scoring) is
 accepted as function arguments -- none of it is hardcoded, so callers can
 sweep/tune freely without editing this module.
 """
-
 import pandas as pd
-from sklearn.model_selection import RandomizedSearchCV
+from sklearn.model_selection import RandomizedSearchCV, StratifiedKFold
 
 from src.training.model import define_model
+
 
 
 def train_model(
@@ -16,8 +16,7 @@ def train_model(
     y_train: pd.Series,
     param_distributions: dict,
     base_params: dict | None = None,
-    n_iter: int = 50,
-    cv: int = 5,
+    n_iter: int = 15,
     # Imbalanced fraud data: average_precision (area under the PR curve) is
     # the closest built-in scorer to the project's macro-PR evaluation
     # policy -- plain accuracy/ROC-AUC scorers are intentionally not used
@@ -50,6 +49,9 @@ def train_model(
         The fitted RandomizedSearchCV object (`.best_estimator_` holds the
         trained XGBoost model, `.best_params_` the winning hyperparameters).
     """
+
+    cv = StratifiedKFold(n_splits = 5, shuffle=True, random_state = random_state)
+
     base_params = dict(base_params or {})
     base_params.setdefault("random_state", random_state)
     estimator = define_model(base_params)
@@ -63,6 +65,7 @@ def train_model(
         random_state=random_state,
         n_jobs=n_jobs,
         refit=True,
+        return_train_score=True
     )
     search.fit(X_train, y_train)
     return search

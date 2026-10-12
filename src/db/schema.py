@@ -32,25 +32,25 @@ class Transaction(Base):
 
     __tablename__ = "transactions"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    transaction_id = Column(String, unique=True, nullable=False, index=True)
+    ser_id = Column(Integer, primary_key=True, autoincrement=True)
+    transID = Column(String, unique=True, nullable=False, index=True)
 
     step = Column(Integer, nullable=False)
     type = Column(String, nullable=False)  # CASH_IN, CASH_OUT, DEBIT, PAYMENT, TRANSFER
     amount = Column(Float, nullable=False)
-    name_orig = Column(String, nullable=False)
-    oldbalance_org = Column(Float, nullable=False)
-    newbalance_orig = Column(Float, nullable=False)
-    name_dest = Column(String, nullable=False)
-    oldbalance_dest = Column(Float, nullable=False)
-    newbalance_dest = Column(Float, nullable=False)
-    is_flagged_fraud = Column(Boolean, nullable=False, default=False)
+    nameOrig = Column(String, nullable=False)
+    oldbalanceOrg = Column(Float, nullable=False)
+    newbalanceOrig = Column(Float, nullable=False)
+    nameDest = Column(String, nullable=False)
+    oldbalanceDest = Column(Float, nullable=False)
+    newbalancDest = Column(Float, nullable=False)
+    isFlaggedFraud = Column(Boolean, nullable=False, default=False)
 
     # Ground-truth label, when known (e.g. from historical/labeled data).
     # Nullable because live/unlabeled transactions won't have it at write time.
-    is_fraud = Column(Boolean, nullable=True)
+    isFraud = Column(Boolean, nullable=True)
 
-    created_at = Column(DateTime, server_default=func.now())
+    #created_at = Column(DateTime, server_default=func.now())
 
     model_output = relationship("ModelOutput", back_populates="transaction", uselist=False)
 
@@ -60,8 +60,8 @@ class ModelOutput(Base):
 
     __tablename__ = "model_outputs"
 
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    transaction_id = Column(String, ForeignKey("transactions.transaction_id"), nullable=False, index=True)
+    ser_id = Column(Integer, primary_key=True, autoincrement=True)
+    transaction_id = Column(String, ForeignKey("transactions.transID"), nullable=False, index=True)
 
     score = Column(Float, nullable=False)
     flag = Column(Boolean, nullable=False)

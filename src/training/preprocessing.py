@@ -12,24 +12,22 @@ from sklearn.preprocessing import OneHotEncoder
 
 # High-cardinality identifiers -- not useful as model features, and not
 # categorical in any meaningful sense (each value is essentially unique).
-ID_COLUMNS = ["transaction_id", "name_orig", "name_dest"]
+ID_COLUMNS = ["transID", "nameOrig", "nameDest"]
 
 # `is_flagged_fraud` is an existing rule-based flag on the same data the
 # model is trying to predict over -- treating it as a feature risks leaking
 # the very signal we're trying to independently model. Excluded from
 # features; kept available upstream for analysis/comparison only.
-LEAKAGE_COLUMNS = ["is_flagged_fraud"]
+LEAKAGE_COLUMNS = ["isFlaggedFraud"]
 
-TARGET_COLUMN = "is_fraud"
+TARGET_COLUMN = "isFraud"
 
-CATEGORICAL_COLUMNS = ["type"]
+CATEGORICAL_COLUMN = "type"
 
 
 def encode_categorical_features(
     df: pd.DataFrame,
-    categorical_columns: Iterable[str] = CATEGORICAL_COLUMNS,
-    encoder: OneHotEncoder | None = None,
-) -> tuple[pd.DataFrame, OneHotEncoder]:
+) -> pd.DataFrame:
     """
     One-hot encode categorical columns (e.g. `type`).
 
@@ -46,22 +44,26 @@ def encode_categorical_features(
         OneHotEncoder, to be persisted alongside the model and reused for
         inference so train/inference encodings stay consistent.
     """
-    categorical_columns = list(categorical_columns)
+    #categorical_columns = list(categorical_columns)
     df = df.copy()
 
-    if encoder is None:
-        encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
-        encoded = encoder.fit_transform(df[categorical_columns])
-    else:
-        encoded = encoder.transform(df[categorical_columns])
+    #if encoder is None:
+       # encoder = OneHotEncoder(handle_unknown="ignore", sparse_output=False)
+      #  encoded = encoder.fit_transform(df[categorical_columns])
+  #  else:
+   #     encoded = encoder.transform(df[categorical_columns])
 
-    encoded_cols = encoder.get_feature_names_out(categorical_columns)
-    encoded_df = pd.DataFrame(encoded, columns=encoded_cols, index=df.index)
+   # encoded_cols = encoder.get_feature_names_out(categorical_columns)
+   # encoded_df = pd.DataFrame(encoded, columns=encoded_cols, index=df.index)
 
-    df = df.drop(columns=categorical_columns)
-    df = pd.concat([df, encoded_df], axis=1)
+    #df = df.drop(columns=categorical_columns)
+    #df = pd.concat([df, encoded_df], axis=1)
 
-    return df, encoder
+    categorical_features = df.select_dtypes(include=["object", "category", "bool"]).columns
+
+    df[categorical_features] = df[categorical_features].astype('category')
+
+    return df
 
 
 def split_train_test(
@@ -69,10 +71,10 @@ def split_train_test(
     target_column: str = TARGET_COLUMN,
     id_columns: Iterable[str] = ID_COLUMNS,
     leakage_columns: Iterable[str] = LEAKAGE_COLUMNS,
-    test_size: float = 0.2,
+    test_size: float = 0.4,
     random_state: int = 42,
     stratify: bool = True,
-) -> tuple[pd.DataFrame, pd.DataFrame, pd.Series, pd.Series]:
+) :
     """
     Split into train/test feature matrices and label vectors.
 
