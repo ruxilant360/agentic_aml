@@ -33,6 +33,7 @@ trainable_data/
 *.csv
 *.parquet
 *.db
-*.md
+CALUDE.md
+
 
 
